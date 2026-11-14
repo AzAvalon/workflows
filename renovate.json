@@ -47,6 +47,13 @@
         "@saithodev/semantic-release-backmerge"
       ],
       "groupName": "semantic-release"
+    },
+    {
+      "description": "conventional-changelog-conventionalcommits 10 needs conventional-changelog-writer 9; semantic-release 25 still loads writer 8 and fails to render notes",
+      "matchPackageNames": [
+        "conventional-changelog-conventionalcommits"
+      ],
+      "allowedVersions": "<10"
     }
   ]
 }

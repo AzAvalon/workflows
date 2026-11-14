@@ -67,7 +67,7 @@ jobs:
         uses: EricCrosson/install-github-release-binary@679a6508ba13bc1eac11e387f729a8bc421ac07a # v2
         with:
           # renovate: datasource=github-releases depName=semantic-release-cargo/semantic-release-cargo
-          targets: semantic-release-cargo/semantic-release-cargo@v2.4.81
+          targets: semantic-release-cargo/semantic-release-cargo@v2.4.84
 
       - name: Install cargo-binstall
         uses: cargo-bins/cargo-binstall@851112458b5f28a29e5bc14a690c3f283d9dcc6f # v1.26.2

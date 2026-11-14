@@ -103,9 +103,9 @@ the custom manager in `renovate.json` picks it up.
 
 ## Testing this repository
 
-`tests.yml` calls each workflow on pull requests and on every push to
-`develop`, on both runners where it matters. Develop pushes publish the
-dummy image and chart as `develop.<sha>` / `0.0.0-develop.<sha>`. `tests.yml` and `release.yml` need:
+`tests.yml` calls each workflow on pull requests, on both runners where it
+matters. `develop` only moves by fast-forward to a tested PR head, so pushes
+to it do not run the checks again. `tests.yml` and `release.yml` need:
 
 - variable `CI_APP_CLIENT_ID` and secret `CI_APP_PRIVATE_KEY` (the App),
 - variable `DOCKERHUB_USERNAME` and secret `DOCKERHUB_TOKEN` (push the

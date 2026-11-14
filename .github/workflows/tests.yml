@@ -3,14 +3,10 @@ name: Checks
 on:
   workflow_dispatch:
   pull_request:
-  push:
-    branches:
-      - develop
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  # PRs keep only the latest run; every develop push runs to the end
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
@@ -81,8 +77,8 @@ jobs:
     with:
       service-name: dummy-service
       docker-tag: ${{ github.event_name == 'pull_request' && format('pr-{0}.{1}', github.event.pull_request.number, github.event.pull_request.head.sha) || format('{0}.{1}', github.ref_name, github.sha) }}
-      # fork PRs get no secrets, so they build without pushing
-      docker-push: ${{ (github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)) }}
+      # fork PRs and manual runs build without pushing
+      docker-push: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository }}
       github-client-id: ${{ vars.CI_APP_CLIENT_ID }}
       dockerhub-username: ${{ vars.DOCKERHUB_USERNAME }}
     secrets:
@@ -90,7 +86,7 @@ jobs:
       dockerhub-token: ${{ secrets.DOCKERHUB_TOKEN }}
 
   publish-chart:
-    if: ${{ (github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)) }}
+    if: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository }}
     uses: ./.github/workflows/_publish_chart.yml
     permissions:
       contents: read

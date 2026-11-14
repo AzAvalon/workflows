@@ -1,0 +1,12 @@
+[package]
+name = "workflows-ci-dummy"
+version = "0.0.0"
+edition = "2024"
+description = "Dummy crate for the cargo publish dry run in CI"
+license = "MIT"
+publish = true
+
+[workspace]
+
+[dependencies]
+serde = "1.0"

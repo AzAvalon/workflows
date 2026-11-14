@@ -1,0 +1,219 @@
+name: App Tests
+
+on:
+  workflow_call:
+    inputs:
+      test-id:
+        required: true
+        type: string
+      opt-cache-path:
+        default: ""
+        required: false
+        type: string
+      opt-cache-key:
+        default: ""
+        required: false
+        type: string
+      setup-cmd:
+        default: "make ci-setup"
+        required: false
+        type: string
+      test-cmd:
+        default: "make tests-with-coverage"
+        required: false
+        type: string
+      post-test-cmd:
+        default: "make ci-post-run"
+        required: false
+        type: string
+      container-image:
+        description: "Optional job container image. Empty runs on the runner itself (Rust, Python, Docker preinstalled)"
+        default: ""
+        required: false
+        type: string
+      use-redis-image:
+        default: "" # docker.io/library/redis:8
+        required: false
+        type: string
+      use-mongo-image:
+        default: "" # docker.io/library/mongo:8
+        required: false
+        type: string
+      use-keycloak-image:
+        default: "" # quay.io/keycloak/keycloak:26.4
+        required: false
+        type: string
+      use-rabbitmq-image:
+        default: "" # docker.io/library/rabbitmq:4
+        required: false
+        type: string
+      use-postgres-image:
+        default: "" # docker.io/library/postgres:18-alpine
+        required: false
+        type: string
+      pull-lfs:
+        default: false
+        required: false
+        type: boolean
+      extra-upload:
+        description: "Extra folder to upload"
+        required: false
+        type: string
+        default: ""
+      runner:
+        description: "Runner label: ubuntu-26.04 or ubuntu-26.04-arm"
+        required: false
+        type: string
+        default: ubuntu-26.04
+      cargo-version:
+        description: "Rust toolchain to install (for example stable or 1.99.0). Empty uses the toolchain of the runner or container"
+        required: false
+        type: string
+        default: ""
+      skip-save-cache-github:
+        description: "Do not save the rust cache"
+        required: false
+        type: boolean
+        default: false
+      github-client-id:
+        description: "Client ID of the GitHub App that mints the job token"
+        required: true
+        type: string
+      github-app-repositories:
+        description: "Repository names (same owner) the token covers, comma separated. Empty means the calling repository only; when set, list the calling repository too"
+        required: false
+        type: string
+        default: ""
+    secrets:
+      github-private-key:
+        description: "Private key (PEM) of the GitHub App"
+        required: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  app:
+    name: App Tests
+    runs-on: ${{ inputs.runner }}
+    container: ${{ inputs.container-image }}
+    permissions:
+      contents: read
+
+    # Services with an empty image are skipped. Ports are published on
+    # localhost when the job runs on the runner itself.
+    services:
+      redis:
+        image: ${{ inputs.use-redis-image }}
+        ports:
+          - 6379:6379
+      mongodb:
+        image: ${{ inputs.use-mongo-image }}
+        ports:
+          - 27017:27017
+      keycloak:
+        image: ${{ inputs.use-keycloak-image }}
+        ports:
+          - 9010:9010
+        env:
+          KC_HTTP_PORT: 9010
+      rabbitmq:
+        image: ${{ inputs.use-rabbitmq-image }}
+        ports:
+          - 5672:5672
+          - 15672:15672
+        env:
+          RABBITMQ_DEFAULT_USER: guest
+          RABBITMQ_DEFAULT_PASS: guest
+          RABBITMQ_DEFAULT_VHOST: /
+        options: >-
+          --health-cmd="rabbitmq-diagnostics -q ping"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=10
+      postgresql:
+        image: ${{ inputs.use-postgres-image }}
+        ports:
+          - 5432:5432
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        options: >-
+          --health-cmd="pg_isready -U postgres -d postgres"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=10
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          lfs: ${{ inputs.pull-lfs }}
+
+      - name: Generate a token
+        id: generate-token
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3
+        with:
+          client-id: ${{ inputs.github-client-id }}
+          private-key: ${{ secrets.github-private-key }}
+          repositories: ${{ inputs.github-app-repositories }}
+          permission-contents: read
+
+      - name: Install Rust toolchain
+        if: ${{ inputs.cargo-version != '' }}
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: ${{ inputs.cargo-version }}
+
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          save-if: ${{ inputs.skip-save-cache-github == false }}
+
+      - name: Optional cache
+        if: ${{ inputs.opt-cache-path != '' && inputs.opt-cache-key != '' }}
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: |
+            ${{ inputs.opt-cache-path }}
+          key: ${{ inputs.opt-cache-key }}
+
+      - name: Setup CI
+        env:
+          SCOPED_GITHUB_TOKEN: ${{ steps.generate-token.outputs.token }}
+        run: ${{ inputs.setup-cmd }}
+
+      - name: Tests
+        run: ${{ inputs.test-cmd }}
+
+      - name: Post Tests
+        if: ${{ always() }}
+        run: ${{ inputs.post-test-cmd }}
+
+      - name: Rename reports
+        if: ${{ always() }}
+        run: |
+          # Debug info embeds the absolute workspace path in coverage.info's SF:
+          # entries instead of a path relative to the repo root, so SonarCloud
+          # can't match any file and silently drops all coverage data.
+          sed -i "s|^SF:$GITHUB_WORKSPACE/|SF:|" coverage.info
+          mv coverage.info coverage-${{ inputs.test-id }}.info
+          mv junit.xml ${{ inputs.test-id }}.junit.xml
+
+      - name: Upload reports
+        if: ${{ always() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: reports-${{ github.run_id }}-${{ github.run_attempt }}-${{ inputs.test-id }}
+          path: |
+            coverage-${{ inputs.test-id }}.info
+            ${{ inputs.test-id }}.junit.xml
+          retention-days: 5
+
+      - name: Upload extra folder
+        if: ${{ always() && inputs.extra-upload != '' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: extra-${{ github.run_id }}-${{ github.run_attempt }}-${{ inputs.test-id }}
+          path: |
+            ${{ inputs.extra-upload }}
+          retention-days: 5

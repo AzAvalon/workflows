@@ -1,0 +1,29 @@
+name: Release
+
+on:
+  workflow_dispatch: # only for manual release
+    inputs:
+      dry-run:
+        description: "Dry-run mode"
+        required: false
+        type: boolean
+        default: false
+
+# Only allow one release workflow to execute at a time, since each release
+# workflow uses shared resources (git tags, package registries)
+concurrency:
+  group: ${{ github.workflow }}
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    uses: ./.github/workflows/_release.yml
+    with:
+      dry-run: ${{ inputs.dry-run }}
+      github-client-id: ${{ vars.CI_APP_CLIENT_ID }}
+    permissions:
+      contents: read
+    secrets:
+      github-private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}

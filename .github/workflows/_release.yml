@@ -1,0 +1,107 @@
+name: Release
+
+on:
+  workflow_call:
+    inputs:
+      dry-run:
+        description: "Whether to run the release in dry-run mode"
+        required: false
+        type: boolean
+        default: false
+      runner:
+        description: "Runner label: ubuntu-26.04 or ubuntu-26.04-arm"
+        required: false
+        type: string
+        default: ubuntu-26.04
+      github-client-id:
+        description: "Client ID of the GitHub App that mints the job token"
+        required: true
+        type: string
+      github-app-repositories:
+        description: "Repository names (same owner) the token covers, comma separated. Empty means the calling repository only; when set, list the calling repository too"
+        required: false
+        type: string
+        default: ""
+    secrets:
+      github-private-key:
+        description: "Private key (PEM) of the GitHub App"
+        required: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  release:
+    runs-on: ${{ inputs.runner }}
+    permissions:
+      contents: read # the App token does the writes
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false # semantic-release uses its own token
+
+      - name: Generate a token
+        id: generate-token
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3
+        with:
+          client-id: ${{ inputs.github-client-id }}
+          private-key: ${{ secrets.github-private-key }}
+          repositories: ${{ inputs.github-app-repositories }}
+          permission-contents: write
+          permission-issues: write
+          permission-pull-requests: write
+
+      - name: Cargo Github credentials
+        env:
+          TOKEN: ${{ steps.generate-token.outputs.token }}
+        run: git config --global url."https://x-access-token:${TOKEN}@github.com".insteadOf https://github.com
+
+      # helm, yq and Rust ship with the ubuntu-26.04 runner images.
+      - uses: gabe565/setup-helm-docs-action@d5c35bdc9133cfbea3b671acadf50a29029e87c2 # v1
+        with:
+          # renovate: datasource=github-releases depName=norwoodj/helm-docs
+          version: v1.14.2
+
+      - name: Install semantic-release-cargo
+        uses: EricCrosson/install-github-release-binary@679a6508ba13bc1eac11e387f729a8bc421ac07a # v2
+        with:
+          # renovate: datasource=github-releases depName=semantic-release-cargo/semantic-release-cargo
+          targets: semantic-release-cargo/semantic-release-cargo@v2.4.81
+
+      - name: Install cargo-binstall
+        uses: cargo-bins/cargo-binstall@851112458b5f28a29e5bc14a690c3f283d9dcc6f # v1.26.2
+        with:
+          # Without it the action installs the latest release; Renovate bumps it
+          # together with the action (group cargo-binstall).
+          # renovate: datasource=github-releases depName=cargo-bins/cargo-binstall extractVersion=^v(?<version>.+)$
+          version: 1.25.2
+
+      # `cargo set-version --workspace <v>` for edit-version.sh: bumps the
+      # workspace version, the version our own crates pin each other at, and
+      # Cargo.lock. cargo-edit ships no release binaries; binstall takes the
+      # signed QuickInstall build, and fails rather than compile if none exists.
+      - name: Install cargo-set-version
+        run: |
+          # renovate: datasource=crate depName=cargo-edit
+          VERSION="0.13.14"
+          cargo binstall "cargo-edit@${VERSION}" --no-confirm --locked --disable-strategies compile
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+
+      - name: Semantic Release
+        uses: cycjimmy/semantic-release-action@ad51787758d9654d5a75150a89a6fa9b3ccef95e # v8.1.4
+        env:
+          GITHUB_TOKEN: ${{ steps.generate-token.outputs.token }}
+        with:
+          # renovate: datasource=npm depName=semantic-release
+          semantic_version: 25.0.3
+          # Lines are bumped by the npm custom manager in renovate.json.
+          extra_plugins: |
+            @semantic-release/changelog@6.0.3
+            @semantic-release/git@10.0.1
+            @semantic-release/exec@7.1.0
+            conventional-changelog-conventionalcommits@9.3.1
+            @saithodev/semantic-release-backmerge@4.0.1
+          dry_run: ${{ inputs.dry-run }}

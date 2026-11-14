@@ -1,0 +1,126 @@
+name: Publish Cargo Crate
+
+# Publishes to crates.io. Without a cargo-registry-token secret it uses
+# crates.io trusted publishing (GitHub OIDC): configure the trusted publisher
+# on crates.io for the calling repository and workflow file first.
+
+on:
+  workflow_call:
+    inputs:
+      container-image:
+        description: "Optional job container image. Empty runs on the runner itself"
+        default: ""
+        required: false
+        type: string
+      runner:
+        description: "Runner label: ubuntu-26.04 or ubuntu-26.04-arm"
+        required: false
+        type: string
+        default: ubuntu-26.04
+      manifest-path:
+        description: "Path to the Cargo.toml of the crate/app to publish"
+        required: false
+        type: string
+        default: "Cargo.toml"
+      package:
+        description: "Workspace package to publish (cargo -p <package>). Leave empty to publish the manifest's root package"
+        required: false
+        type: string
+        default: ""
+      dry-run:
+        description: "Run cargo publish in dry-run mode (build + verify, no upload)"
+        required: false
+        type: boolean
+        default: false
+      no-verify:
+        description: "Skip building the crate before publishing (cargo publish --no-verify)"
+        required: false
+        type: boolean
+        default: false
+      extra-args:
+        description: "Extra arguments appended to the cargo publish invocation"
+        required: false
+        type: string
+        default: ""
+      pull-lfs:
+        description: "Whether to pull Git LFS objects on checkout"
+        required: false
+        type: boolean
+        default: false
+      github-client-id:
+        description: "Client ID of the GitHub App that mints the job token"
+        required: true
+        type: string
+      github-app-repositories:
+        description: "Repository names (same owner) the token covers, comma separated. Empty means the calling repository only; when set, list the calling repository too"
+        required: false
+        type: string
+        default: ""
+    secrets:
+      github-private-key:
+        description: "Private key (PEM) of the GitHub App"
+        required: true
+      cargo-registry-token:
+        description: "crates.io API token. Empty uses trusted publishing"
+        required: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  publish:
+    name: Publish Cargo Crate
+    runs-on: ${{ inputs.runner }}
+    container: ${{ inputs.container-image }}
+    permissions:
+      id-token: write # crates.io trusted publishing
+      contents: read
+    env:
+      HAS_CARGO_TOKEN: ${{ secrets.cargo-registry-token != '' }}
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          lfs: ${{ inputs.pull-lfs }}
+
+      - name: Generate a token
+        id: generate-token
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3
+        with:
+          client-id: ${{ inputs.github-client-id }}
+          private-key: ${{ secrets.github-private-key }}
+          repositories: ${{ inputs.github-app-repositories }}
+          permission-contents: read
+
+      - name: Cargo Github credentials
+        env:
+          TOKEN: ${{ steps.generate-token.outputs.token }}
+        run: git config --global url."https://x-access-token:${TOKEN}@github.com".insteadOf https://github.com
+
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+
+      - name: Auth to crates.io (trusted publishing)
+        id: crates-io-auth
+        if: ${{ !inputs.dry-run && env.HAS_CARGO_TOKEN != 'true' }}
+        uses: rust-lang/crates-io-auth-action@3268eb413133e2960fa4ae0e963ca76380c54cd9 # v1.0.6
+
+      - name: Publish to crates.io
+        shell: bash
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.cargo-registry-token || steps.crates-io-auth.outputs.token }}
+          MANIFEST_PATH: ${{ inputs.manifest-path }}
+          PACKAGE: ${{ inputs.package }}
+          DRY_RUN: ${{ inputs.dry-run }}
+          NO_VERIFY: ${{ inputs.no-verify }}
+          EXTRA_ARGS: ${{ inputs.extra-args }}
+        run: |
+          set -euo pipefail
+          args=(--manifest-path "${MANIFEST_PATH}")
+          [ -n "${PACKAGE}" ] && args+=(-p "${PACKAGE}")
+          [ "${DRY_RUN}" = "true" ] && args+=(--dry-run)
+          [ "${NO_VERIFY}" = "true" ] && args+=(--no-verify)
+          # shellcheck disable=SC2206
+          [ -n "${EXTRA_ARGS}" ] && args+=(${EXTRA_ARGS})
+
+          echo "cargo publish ${args[*]}"
+          cargo publish "${args[@]}"

@@ -1,0 +1,112 @@
+name: Clippy
+
+on:
+  workflow_call:
+    inputs:
+      container-image:
+        description: "Optional job container image. Empty runs on the runner itself"
+        default: ""
+        required: false
+        type: string
+      base-branch:
+        description: "Branch the automatic clippy PR targets"
+        required: false
+        type: string
+        default: develop
+      runner:
+        description: "Runner label: ubuntu-26.04 or ubuntu-26.04-arm"
+        required: false
+        type: string
+        default: ubuntu-26.04
+      github-client-id:
+        description: "Client ID of the GitHub App that mints the job token"
+        required: true
+        type: string
+      github-app-repositories:
+        description: "Repository names (same owner) the token covers, comma separated. Empty means the calling repository only; when set, list the calling repository too"
+        required: false
+        type: string
+        default: ""
+    secrets:
+      github-private-key:
+        description: "Private key (PEM) of the GitHub App"
+        required: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  clippy:
+    runs-on: ${{ inputs.runner }}
+    container: ${{ inputs.container-image }}
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Generate a token
+        id: generate-token
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3
+        with:
+          client-id: ${{ inputs.github-client-id }}
+          private-key: ${{ secrets.github-private-key }}
+          repositories: ${{ inputs.github-app-repositories }}
+          permission-contents: write
+          permission-pull-requests: write
+
+      - name: Cargo Github credentials
+        env:
+          TOKEN: ${{ steps.generate-token.outputs.token }}
+        run: git config --global url."https://x-access-token:${TOKEN}@github.com".insteadOf https://github.com
+
+      - name: Install latest stable
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+          components: clippy
+
+      - name: Install latest nightly
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: nightly
+          components: rustfmt
+
+      - name: Run cargo clippy, fmt, and check
+        env:
+          SCOPED_GITHUB_TOKEN: ${{ steps.generate-token.outputs.token }}
+        run: |
+          cargo +stable clippy --all --fix --all-features --all-targets --allow-dirty -- --warn clippy::pedantic
+          cargo +nightly fmt --all
+          cargo +stable check --workspace --all-features --verbose
+
+      - name: Commit and push changes
+        id: cpr
+        continue-on-error: true
+        uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8
+        with:
+          token: ${{ steps.generate-token.outputs.token }}
+          commit-message: Run clippy on the code base
+          committer: GitHub <noreply@github.com>
+          author: ${{ github.actor }} <${{ github.actor }}@users.noreply.github.com>
+          title: "chore(clippy): Code maintenance"
+          body: |
+            🤖 This is an automatic PR 🤖
+            Clippy suggests the following changes
+          labels: not_in_changelog
+          branch: auto/clippy
+          base: ${{ inputs.base-branch }}
+
+      - uses: peter-evans/enable-pull-request-automerge@a660677d5469627102a1c1e11409dd063606628d # v3
+        if: ${{ steps.cpr.outputs.pull-request-number }}
+        continue-on-error: true
+        with:
+          token: ${{ steps.generate-token.outputs.token }}
+          pull-request-number: ${{ steps.cpr.outputs.pull-request-number }}
+          merge-method: squash
+
+      - name: Check outputs
+        if: ${{ success() }}
+        run: |
+          echo "Pull Request Number - ${{ steps.cpr.outputs.pull-request-number }}"
+          echo "Pull Request URL - ${{ steps.cpr.outputs.pull-request-url }}"

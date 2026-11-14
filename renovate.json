@@ -1,0 +1,52 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended",
+    "helpers:pinGitHubActionDigests"
+  ],
+  "pre-commit": {
+    "enabled": true
+  },
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "Versions annotated with a '# renovate:' comment on the line above",
+      "managerFilePatterns": [
+        "/^\\.github/workflows/[^/]+\\.ya?ml$/"
+      ],
+      "matchStrings": [
+        "#\\s*renovate:\\s*datasource=(?<datasource>\\S+)\\s+depName=(?<depName>\\S+)(?:\\s+packageName=(?<packageName>\\S+))?(?:\\s+versioning=(?<versioning>\\S+))?(?:\\s+extractVersion=(?<extractVersion>\\S+))?\\s*\\n[^\\n]*?(?:[:=]\\s*|@)[\"']?(?<currentValue>[^\"'\\s@:=]+)[\"']?[ \\t]*(?:\\n|$)"
+      ]
+    },
+    {
+      "customType": "regex",
+      "description": "semantic-release plugins listed in extra_plugins",
+      "managerFilePatterns": [
+        "/^\\.github/workflows/_release\\.yml$/"
+      ],
+      "matchStrings": [
+        "\\n[ \\t]+(?<depName>@?[a-z0-9][a-z0-9._/-]*)@(?<currentValue>\\d+\\.\\d+\\.\\d+)"
+      ],
+      "datasourceTemplate": "npm"
+    }
+  ],
+  "packageRules": [
+    {
+      "description": "Bump the cargo-binstall action and the binary it installs together",
+      "matchPackageNames": [
+        "cargo-bins/cargo-binstall"
+      ],
+      "groupName": "cargo-binstall"
+    },
+    {
+      "description": "Bump semantic-release and its plugins together",
+      "matchPackageNames": [
+        "semantic-release",
+        "@semantic-release/**",
+        "conventional-changelog-conventionalcommits",
+        "@saithodev/semantic-release-backmerge"
+      ],
+      "groupName": "semantic-release"
+    }
+  ]
+}

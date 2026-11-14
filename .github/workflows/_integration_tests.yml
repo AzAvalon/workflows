@@ -1,0 +1,126 @@
+name: Integration Tests
+
+# Installs the chart in a throwaway kind cluster on the runner and waits for
+# it to become ready. Images are pulled from Docker Hub.
+
+on:
+  workflow_call:
+    inputs:
+      dockerhub-username:
+        description: "Docker Hub user, only for private images; creates the regcred pull secret"
+        required: false
+        type: string
+        default: ""
+      helm-release-id:
+        description: "Helm release name prefix."
+        required: false
+        default: "integ"
+        type: string
+      docker-tag:
+        required: true
+        type: string
+      chart-path:
+        description: "Chart root path inside its repository."
+        default: "./chart"
+        required: false
+        type: string
+      chart-values:
+        description: "Chart values file."
+        default: "./.github/values.ci.yaml"
+        required: false
+        type: string
+      namespace:
+        description: "Namespace the chart is installed in."
+        default: "integ"
+        required: false
+        type: string
+      deploy-timeout:
+        description: "Deployment timeout."
+        default: "5m0s"
+        required: false
+        type: string
+      kind-node-image:
+        description: "kind node image. Empty uses the default of the kind release on the runner"
+        default: ""
+        required: false
+        type: string
+      runner:
+        description: "Runner label: ubuntu-26.04 or ubuntu-26.04-arm"
+        required: false
+        type: string
+        default: ubuntu-26.04
+    secrets:
+      dockerhub-token:
+        required: false
+
+jobs:
+  deploy:
+    name: Deploy & Tests
+    runs-on: ${{ inputs.runner }}
+    permissions:
+      contents: read
+
+    env:
+      NAMESPACE: ${{ inputs.namespace }}
+      RELEASE: ${{ inputs.helm-release-id }}-${{ github.run_id }}-${{ github.run_attempt }}
+      DOCKERHUB_USERNAME: ${{ inputs.dockerhub-username }}
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Update Chart.yaml & values.ci.yaml # version & tag update
+        run: ./.github/scripts/edit-values-ci.sh "${{ inputs.docker-tag }}"
+
+      - name: Login Helm to Docker Hub
+        if: ${{ env.DOCKERHUB_USERNAME != '' }}
+        env:
+          DOCKERHUB_TOKEN: ${{ secrets.dockerhub-token }}
+        run: echo "${DOCKERHUB_TOKEN}" | helm registry login --username "${DOCKERHUB_USERNAME}" --password-stdin registry-1.docker.io
+
+      - name: Update Helm dependencies
+        run: helm dependencies update "${{ inputs.chart-path }}"
+
+      # kind and kubectl ship with the ubuntu-26.04 runner images.
+      - name: Create kind cluster
+        env:
+          NODE_IMAGE: ${{ inputs.kind-node-image }}
+        run: |
+          set -euo pipefail
+          args=(--name integ --wait 120s)
+          [ -n "${NODE_IMAGE}" ] && args+=(--image "${NODE_IMAGE}")
+          kind create cluster "${args[@]}"
+          kubectl create namespace "$NAMESPACE"
+
+      - name: Create image pull secret
+        if: ${{ env.DOCKERHUB_USERNAME != '' }}
+        env:
+          DOCKERHUB_TOKEN: ${{ secrets.dockerhub-token }}
+        run: |
+          kubectl create secret docker-registry regcred \
+            -n "$NAMESPACE" \
+            --docker-server=https://index.docker.io/v1/ \
+            --docker-username="${DOCKERHUB_USERNAME}" \
+            --docker-password="${DOCKERHUB_TOKEN}"
+
+      - name: Install Chart
+        run: |
+          set -euo pipefail
+          args=(
+            --wait
+            --debug
+            --timeout "${{ inputs.deploy-timeout }}"
+            -f "${{ inputs.chart-values }}"
+            -n "$NAMESPACE"
+          )
+          [ -n "${DOCKERHUB_USERNAME}" ] && args+=(--set 'global.imagePullSecrets={regcred}')
+          helm install "${args[@]}" "$RELEASE" "${{ inputs.chart-path }}"
+
+      - name: Show cluster state
+        if: failure()
+        run: |
+          kubectl get all -n "$NAMESPACE" -o wide || true
+          kubectl get events -n "$NAMESPACE" --sort-by=.lastTimestamp || true
+
+      - name: Delete kind cluster
+        if: always()
+        run: kind delete cluster --name integ

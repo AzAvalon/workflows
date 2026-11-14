@@ -1,0 +1,5 @@
+apiVersion: v2
+name: dummy-service
+description: Smoke test chart for CI workflow validation
+type: application
+version: 0.0.0

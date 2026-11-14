@@ -1,0 +1,80 @@
+name: Chart Tests
+
+on:
+  workflow_call:
+    inputs:
+      dockerhub-username:
+        description: "Docker Hub user, only to pull private charts. Empty skips the login"
+        required: false
+        type: string
+        default: ""
+      chart-path:
+        description: "Chart root path inside its repository."
+        default: "./chart"
+        required: false
+        type: string
+      chart-values:
+        description: "Chart values file."
+        default: "./.github/values.ci.yaml"
+        required: false
+        type: string
+      kubeconform-version:
+        description: "kubeconform release to install"
+        # renovate: datasource=github-releases depName=yannh/kubeconform
+        default: "v0.7.0"
+        required: false
+        type: string
+      runner:
+        description: "Runner label: ubuntu-26.04 or ubuntu-26.04-arm"
+        required: false
+        type: string
+        default: ubuntu-26.04
+    secrets:
+      dockerhub-token:
+        required: false
+
+jobs:
+  chart:
+    name: Chart Tests
+    runs-on: ${{ inputs.runner }}
+    permissions:
+      contents: read
+    env:
+      DOCKERHUB_USERNAME: ${{ inputs.dockerhub-username }}
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      # Helm 4 ships with the ubuntu-26.04 runner images; kubeconform does not.
+      - name: Install kubeconform
+        env:
+          VERSION: ${{ inputs.kubeconform-version }}
+        run: |
+          set -euo pipefail
+          case "${RUNNER_ARCH}" in
+            X64) arch=amd64 ;;
+            ARM64) arch=arm64 ;;
+            *) echo "Unsupported runner arch ${RUNNER_ARCH}" >&2; exit 1 ;;
+          esac
+          url="https://github.com/yannh/kubeconform/releases/download/${VERSION}/kubeconform-linux-${arch}.tar.gz"
+          mkdir -p "${RUNNER_TEMP}/bin"
+          curl -fsSL "$url" | tar -xz -C "${RUNNER_TEMP}/bin" kubeconform
+          echo "${RUNNER_TEMP}/bin" >> "$GITHUB_PATH"
+
+      - name: Login Helm to Docker Hub
+        if: ${{ env.DOCKERHUB_USERNAME != '' }}
+        env:
+          DOCKERHUB_TOKEN: ${{ secrets.dockerhub-token }}
+        run: echo "${DOCKERHUB_TOKEN}" | helm registry login --username "${DOCKERHUB_USERNAME}" --password-stdin registry-1.docker.io
+
+      - name: Update Helm dependencies
+        run: helm dependencies update "${{ inputs.chart-path }}"
+
+      - name: Helm lint
+        run: helm lint -f "${{ inputs.chart-values }}" "${{ inputs.chart-path }}"
+
+      - name: Render chart
+        run: helm template -f "${{ inputs.chart-values }}" "${{ inputs.chart-path }}" > "${RUNNER_TEMP}/chart-template.yaml"
+
+      - name: Kubeconform
+        run: kubeconform -strict -output json -verbose -ignore-missing-schemas "${RUNNER_TEMP}/chart-template.yaml"

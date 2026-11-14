@@ -1,0 +1,132 @@
+name: Checks
+
+on:
+  workflow_dispatch:
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  pre-commit:
+    uses: ./.github/workflows/_pre_commit.yml
+    permissions:
+      contents: read
+    with:
+      github-client-id: ${{ vars.CI_APP_CLIENT_ID }}
+    secrets:
+      github-private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}
+
+  actionlint:
+    name: Lint workflows
+    runs-on: ubuntu-26.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Run actionlint
+        uses: rhysd/actionlint@914e7df21a07ef503a81201c76d2b11c789d3fca # v1.7.12
+
+  app:
+    strategy:
+      matrix:
+        runner: [ubuntu-26.04, ubuntu-26.04-arm]
+    uses: ./.github/workflows/_tests_app.yml
+    permissions:
+      contents: read
+    with:
+      runner: ${{ matrix.runner }}
+      test-id: workflows-${{ matrix.runner }}
+      # renovate: datasource=docker depName=docker.io/library/postgres
+      use-postgres-image: docker.io/library/postgres:18-alpine
+      opt-cache-path: .cache
+      opt-cache-key: workflows-smoke-${{ matrix.runner }}-${{ github.sha }}
+      extra-upload: extra
+      skip-save-cache-github: ${{ github.event_name == 'workflow_dispatch' }}
+      github-client-id: ${{ vars.CI_APP_CLIENT_ID }}
+    secrets:
+      github-private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}
+
+  chart:
+    strategy:
+      matrix:
+        runner: [ubuntu-26.04, ubuntu-26.04-arm]
+    uses: ./.github/workflows/_tests_chart.yml
+    permissions:
+      contents: read
+    with:
+      runner: ${{ matrix.runner }}
+
+  clippy:
+    uses: ./.github/workflows/_clippy.yml
+    permissions:
+      contents: read
+    with:
+      github-client-id: ${{ vars.CI_APP_CLIENT_ID }}
+    secrets:
+      github-private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}
+
+  build-push-docker:
+    uses: ./.github/workflows/_build_push_docker.yml
+    permissions:
+      id-token: write
+      contents: read
+    with:
+      service-name: dummy-service
+      docker-tag: ${{ format('pr-{0}.{1}', github.event.pull_request.number, github.event.pull_request.head.sha) }}
+      docker-push: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository }}
+      github-client-id: ${{ vars.CI_APP_CLIENT_ID }}
+      dockerhub-username: ${{ vars.DOCKERHUB_USERNAME }}
+    secrets:
+      github-private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}
+      dockerhub-token: ${{ secrets.DOCKERHUB_TOKEN }}
+
+  publish-chart:
+    if: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository }}
+    uses: ./.github/workflows/_publish_chart.yml
+    permissions:
+      contents: read
+    with:
+      service-name: dummy-service
+      chart-version: ${{ format('0.0.0-pr.{0}.{1}', github.event.pull_request.number, github.event.pull_request.head.sha) }}
+      dockerhub-username: ${{ vars.DOCKERHUB_USERNAME }}
+    secrets:
+      dockerhub-token: ${{ secrets.DOCKERHUB_TOKEN }}
+
+  publish-cargo:
+    uses: ./.github/workflows/_publish_cargo.yml
+    permissions:
+      id-token: write
+      contents: read
+    with:
+      manifest-path: rust/Cargo.toml
+      dry-run: true
+      github-client-id: ${{ vars.CI_APP_CLIENT_ID }}
+    secrets:
+      github-private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}
+
+  integration-tests:
+    needs:
+      - build-push-docker
+    strategy:
+      matrix:
+        runner: [ubuntu-26.04, ubuntu-26.04-arm]
+    uses: ./.github/workflows/_integration_tests.yml
+    permissions:
+      contents: read
+    with:
+      runner: ${{ matrix.runner }}
+      docker-tag: ${{ format('pr-{0}.{1}', github.event.pull_request.number, github.event.pull_request.head.sha) }}
+
+  release:
+    uses: ./.github/workflows/_release.yml
+    permissions:
+      contents: read
+    with:
+      dry-run: true
+      github-client-id: ${{ vars.CI_APP_CLIENT_ID }}
+    secrets:
+      github-private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}

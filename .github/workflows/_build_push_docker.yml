@@ -1,0 +1,327 @@
+name: Build & Push Docker Image
+
+# Each platform builds natively on its own GitHub-hosted runner
+# (linux/amd64 on ubuntu-26.04, linux/arm64 on ubuntu-26.04-arm) and pushes
+# every bake target by digest. A merge job then creates, for each target, the
+# multi-platform tags written in the bake file. Groups with several targets
+# are supported.
+
+on:
+  workflow_call:
+    inputs:
+      dockerhub-username:
+        description: "Docker Hub user. Empty skips the login"
+        required: false
+        type: string
+        default: ""
+      pull-lfs:
+        description: "Whether to pull Git LFS objects on checkout"
+        default: false
+        required: false
+        type: boolean
+      docker-bake-file:
+        description: "Path to the Docker bake HCL file"
+        required: false
+        default: "dockerfiles/docker-bake.hcl"
+        type: string
+      docker-bake-targets:
+        description: "Bake targets or groups to build (comma or newline separated)"
+        required: false
+        default: default
+        type: string
+      dockerfile:
+        description: "Dockerfile path exposed to bake variables"
+        required: false
+        default: "dockerfiles/Dockerfile"
+        type: string
+      bake-context:
+        description: "Build context path exposed to bake variables"
+        required: false
+        default: .
+        type: string
+      docker-platforms:
+        description: "Comma-separated target platforms: linux/amd64, linux/arm64 or both"
+        required: false
+        default: linux/amd64,linux/arm64
+        type: string
+      service-name:
+        description: "Image repository name, exposed to bake as DOCKER_IMAGE=<docker-registry>/<service-name>"
+        required: true
+        type: string
+      docker-registry:
+        description: "Registry and namespace prefix of the image"
+        required: false
+        type: string
+        default: docker.io/hichamaz
+      docker-push:
+        description: "Whether to push built images"
+        required: false
+        default: false
+        type: boolean
+      docker-sign:
+        description: "Whether to sign pushed images with cosign (keyless, GitHub OIDC)"
+        required: false
+        default: true
+        type: boolean
+      docker-tag:
+        description: "Primary image tag, exposed to bake as DOCKER_TAG_PRIMARY"
+        required: true
+        type: string
+      docker-extra-tag:
+        description: "Optional extra image tag (for example latest), exposed to bake as DOCKER_TAG_EXTRA"
+        required: false
+        default: ""
+        type: string
+      docker-cache:
+        description: "Use the GitHub Actions cache for build layers"
+        required: false
+        default: true
+        type: boolean
+      github-client-id:
+        description: "Client ID of the GitHub App that mints the job token"
+        required: true
+        type: string
+      github-app-repositories:
+        description: "Repository names (same owner) the token covers, comma separated. Empty means the calling repository only; when set, list the calling repository too"
+        required: false
+        type: string
+        default: ""
+    secrets:
+      github-private-key:
+        description: "Private key (PEM) of the GitHub App"
+        required: true
+      dockerhub-token:
+        required: false
+
+jobs:
+  prepare:
+    name: Prepare platforms
+    runs-on: ubuntu-26.04
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+    steps:
+      - name: Map platforms to runners
+        id: matrix
+        env:
+          PLATFORMS: ${{ inputs.docker-platforms }}
+        run: |
+          set -euo pipefail
+          entries=()
+          IFS=',' read -ra platforms <<< "${PLATFORMS}"
+          for p in "${platforms[@]}"; do
+            p="$(echo "$p" | xargs)"
+            case "$p" in
+              linux/amd64) entries+=("{\"platform\":\"$p\",\"arch\":\"amd64\",\"runner\":\"ubuntu-26.04\"}") ;;
+              linux/arm64) entries+=("{\"platform\":\"$p\",\"arch\":\"arm64\",\"runner\":\"ubuntu-26.04-arm\"}") ;;
+              *) echo "Unsupported platform: $p (only linux/amd64 and linux/arm64)" >&2; exit 1 ;;
+            esac
+          done
+          if [ "${#entries[@]}" -eq 0 ]; then
+            echo "No platform given" >&2
+            exit 1
+          fi
+          matrix="[$(IFS=','; echo "${entries[*]}")]"
+          echo "matrix=${matrix}" >> "$GITHUB_OUTPUT"
+          echo "Build matrix: ${matrix}"
+
+  build:
+    name: Build ${{ matrix.platform }}
+    needs: prepare
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+    env:
+      DOCKERHUB_USERNAME: ${{ inputs.dockerhub-username }}
+      # Variables read by the bake file.
+      BAKE_CONTEXT: ${{ inputs.bake-context }}
+      DOCKERFILE: ${{ inputs.dockerfile }}
+      DOCKER_IMAGE: ${{ inputs.docker-registry }}/${{ inputs.service-name }}
+      DOCKER_TAG_PRIMARY: ${{ inputs.docker-tag }}
+      DOCKER_TAG_EXTRA: ${{ inputs.docker-extra-tag }}
+      DOCKER_PLATFORMS: ${{ matrix.platform }}
+    strategy:
+      fail-fast: true
+      matrix:
+        include: ${{ fromJSON(needs.prepare.outputs.matrix) }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          lfs: ${{ inputs.pull-lfs }}
+
+      - name: Generate a token
+        id: generate-token
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3
+        with:
+          client-id: ${{ inputs.github-client-id }}
+          private-key: ${{ secrets.github-private-key }}
+          repositories: ${{ inputs.github-app-repositories }}
+          permission-contents: read
+
+      # Also logs in for pulls, which lifts the anonymous Docker Hub rate limit.
+      - name: Login to Docker Hub
+        if: ${{ env.DOCKERHUB_USERNAME != '' }}
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4
+        with:
+          username: ${{ inputs.dockerhub-username }}
+          password: ${{ secrets.dockerhub-token }}
+
+      - name: Set up Docker Buildx
+        id: setup-buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
+
+      # Resolves the targets and their tags from the bake file, and writes the
+      # per-target overrides: platform, push by digest under the bare
+      # repository (a tagged ref can't be pushed by digest), cache scope.
+      # The real tags are kept in plan.json for the merge job.
+      - name: Plan bake targets
+        id: plan
+        env:
+          BAKE_FILE: ${{ inputs.docker-bake-file }}
+          TARGETS: ${{ inputs.docker-bake-targets }}
+          PLATFORM: ${{ matrix.platform }}
+          ARCH: ${{ matrix.arch }}
+          PUSH: ${{ inputs.docker-push }}
+          CACHE: ${{ inputs.docker-cache }}
+          SERVICE: ${{ inputs.service-name }}
+        run: |
+          set -euo pipefail
+          read -ra targets <<< "$(tr ',\n' '  ' <<< "${TARGETS}")"
+          mkdir -p "${RUNNER_TEMP}/digests"
+          plan="${RUNNER_TEMP}/digests/plan.json"
+          docker buildx bake --file "${BAKE_FILE}" --print "${targets[@]}" \
+            | jq '.target | map_values({tags: (.tags // [])})
+                | map_values(.repo = (.tags[0] // "" | sub("@.*$"; "")
+                    | if (split("/") | last | test(":")) then sub(":[^:/]*$"; "") else . end))' > "${plan}"
+          if jq -e 'map(select(.tags | length == 0)) | length > 0' "${plan}" > /dev/null; then
+            echo "Every bake target needs at least one tag:" >&2
+            cat "${plan}" >&2
+            exit 1
+          fi
+          echo "Targets and tags:"
+          cat "${plan}"
+
+          scope="${SERVICE}-${DOCKERFILE//[^A-Za-z0-9._-]/-}"
+          {
+            echo "set<<EOF_SET"
+            echo "*.platform=${PLATFORM}"
+            echo "*.output=type=image,push-by-digest=true,name-canonical=true,push=${PUSH}"
+            for t in $(jq -r 'keys[]' "${plan}"); do
+              echo "${t}.tags=$(jq -r --arg t "$t" '.[$t].repo' "${plan}")"
+              if [ "${CACHE}" = "true" ]; then
+                echo "${t}.cache-from=type=gha,scope=${scope}-${t}-${ARCH}"
+                echo "${t}.cache-to=type=gha,mode=max,scope=${scope}-${t}-${ARCH}"
+              fi
+            done
+            echo "EOF_SET"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Build and push by digest
+        id: build-bake
+        uses: docker/bake-action@59cb1203cd42bcefd40a1b6d73b589e48c86040e # v7
+        env:
+          DOCKER_BUILD_SUMMARY: false
+          DOCKER_BUILD_RECORD_UPLOAD: false
+          GIT_CREDENTIALS: ${{ steps.generate-token.outputs.token }}
+        with:
+          builder: ${{ steps.setup-buildx.outputs.name }}
+          files: ${{ inputs.docker-bake-file }}
+          targets: ${{ inputs.docker-bake-targets }}
+          set: ${{ steps.plan.outputs.set }}
+
+      - name: Export digests
+        if: ${{ inputs.docker-push }}
+        env:
+          METADATA: ${{ steps.build-bake.outputs.metadata }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          for t in $(jq -r 'keys[]' "${RUNNER_TEMP}/digests/plan.json"); do
+            digest="$(jq -r --arg t "$t" '.[$t]["containerimage.digest"] // empty' <<< "${METADATA}")"
+            if [ -z "${digest}" ]; then
+              echo "No digest for target ${t}" >&2
+              exit 1
+            fi
+            echo "${digest}" > "${RUNNER_TEMP}/digests/${t}@${ARCH}"
+            echo "${t} ${ARCH}: ${digest}"
+          done
+
+      - name: Upload digests
+        if: ${{ inputs.docker-push }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: digests-${{ inputs.service-name }}-${{ inputs.docker-tag }}-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.arch }}
+          path: ${{ runner.temp }}/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  merge:
+    name: Push tags
+    needs: build
+    if: ${{ inputs.docker-push }}
+    runs-on: ubuntu-26.04
+    permissions:
+      id-token: write # cosign keyless signing
+      contents: read
+    outputs:
+      digests: ${{ steps.manifest.outputs.digests }}
+
+    steps:
+      - name: Download digests
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          pattern: digests-${{ inputs.service-name }}-${{ inputs.docker-tag }}-${{ github.run_id }}-${{ github.run_attempt }}-*
+          merge-multiple: true
+          path: ${{ runner.temp }}/digests
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4
+        with:
+          username: ${{ inputs.dockerhub-username }}
+          password: ${{ secrets.dockerhub-token }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
+
+      # One multi-platform manifest per bake target, tagged as in the bake file.
+      - name: Create manifest lists and push tags
+        id: manifest
+        run: |
+          set -euo pipefail
+          dir="${RUNNER_TEMP}/digests"
+          result='{}'
+          for t in $(jq -r 'keys[]' "${dir}/plan.json"); do
+            mapfile -t tags < <(jq -r --arg t "$t" '.[$t].tags[]' "${dir}/plan.json")
+            repo="$(jq -r --arg t "$t" '.[$t].repo' "${dir}/plan.json")"
+            args=()
+            for tag in "${tags[@]}"; do args+=(-t "${tag}"); done
+            for f in "${dir}/${t}@"*; do args+=("${repo}@$(cat "$f")"); done
+            docker buildx imagetools create "${args[@]}"
+            digest="$(docker buildx imagetools inspect "${tags[0]}" --format '{{json .Manifest.Digest}}' | tr -d '"')"
+            if [ -z "${digest}" ] || [ "${digest}" = "null" ]; then
+              echo "Could not resolve digest for ${tags[0]}" >&2
+              exit 1
+            fi
+            echo "Pushed ${tags[*]} (${digest})"
+            result="$(jq -c --arg t "$t" --arg r "${repo}" --arg d "${digest}" '.[$t] = ($r + "@" + $d)' <<< "${result}")"
+          done
+          echo "digests=${result}" >> "$GITHUB_OUTPUT"
+
+      # Signing is best effort: a cosign failure must not fail an image that
+      # is already pushed.
+      - name: Install cosign
+        if: ${{ inputs.docker-sign }}
+        continue-on-error: true
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+
+      - name: Sign pushed images
+        if: ${{ inputs.docker-sign }}
+        continue-on-error: true
+        env:
+          DIGESTS: ${{ steps.manifest.outputs.digests }}
+        run: |
+          set -euo pipefail
+          for ref in $(jq -r '.[]' <<< "${DIGESTS}"); do
+            cosign sign --yes "${ref}"
+          done

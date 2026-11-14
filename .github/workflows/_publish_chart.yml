@@ -1,0 +1,67 @@
+name: Package & Push Helm Chart
+
+on:
+  workflow_call:
+    inputs:
+      dockerhub-username:
+        description: "Docker Hub user that pushes the chart"
+        required: true
+        type: string
+      helm-registry:
+        description: "OCI registry and namespace the chart is pushed to"
+        required: false
+        type: string
+        default: registry-1.docker.io/hichamaz
+      service-name:
+        description: "Chart name (name field of Chart.yaml)"
+        required: true
+        type: string
+      chart-version:
+        required: true
+        type: string
+      chart-path:
+        description: "Chart root path inside its repository."
+        default: "./chart"
+        required: false
+        type: string
+      pre-build-cmd:
+        description: Command run before packaging the chart.
+        required: false
+        type: string
+        default: echo "No pre-build command"
+      runner:
+        description: "Runner label: ubuntu-26.04 or ubuntu-26.04-arm"
+        required: false
+        type: string
+        default: ubuntu-26.04
+    secrets:
+      dockerhub-token:
+        required: true
+
+jobs:
+  publish-chart:
+    runs-on: ${{ inputs.runner }}
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      # Helm 4 ships with the ubuntu-26.04 runner images.
+      - name: Login Helm to Docker Hub
+        env:
+          DOCKERHUB_USERNAME: ${{ inputs.dockerhub-username }}
+          DOCKERHUB_TOKEN: ${{ secrets.dockerhub-token }}
+        run: echo "${DOCKERHUB_TOKEN}" | helm registry login --username "${DOCKERHUB_USERNAME}" --password-stdin registry-1.docker.io
+
+      - name: Pre-build Helm chart
+        run: ${{ inputs.pre-build-cmd }}
+
+      - name: Build Helm dependencies
+        run: helm dependencies build "${{ inputs.chart-path }}"
+
+      - name: Package Helm chart
+        run: helm package "${{ inputs.chart-path }}" --version "${{ inputs.chart-version }}"
+
+      - name: Publish Package
+        run: helm push "${{ inputs.service-name }}-${{ inputs.chart-version }}.tgz" "oci://${{ inputs.helm-registry }}"

@@ -1,0 +1,112 @@
+name: Cleanup Old Caches
+
+on:
+  workflow_call:
+    inputs:
+      owner:
+        description: "Owner of the repository to clean (default: owner of the calling repository)"
+        required: false
+        default: ""
+        type: string
+      repository:
+        description: "Repository to clean (default: the calling repository)"
+        required: false
+        default: ""
+        type: string
+      branch:
+        description: "Branch to keep latest cache for (default: main)"
+        required: false
+        default: "main"
+        type: string
+      keep-count:
+        description: "Number of latest caches to keep (default: 1)"
+        required: false
+        default: 1
+        type: number
+      cache-key-filter:
+        description: 'Substring to filter caches by key (e.g., "cargo")'
+        required: false
+        default: ""
+        type: string
+      runner:
+        description: "Runner label: ubuntu-26.04 or ubuntu-26.04-arm"
+        required: false
+        type: string
+        default: ubuntu-26.04
+      github-client-id:
+        description: "Client ID of the GitHub App that mints the job token"
+        required: true
+        type: string
+      github-app-repositories:
+        description: "Repository names (same owner) the token covers, comma separated. Empty means the calling repository only; when set, list the calling repository too"
+        required: false
+        type: string
+        default: ""
+    secrets:
+      github-private-key:
+        description: "Private key (PEM) of the GitHub App"
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  cleanup:
+    runs-on: ${{ inputs.runner }}
+    steps:
+      - name: Generate a token
+        id: generate-token
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3
+        with:
+          client-id: ${{ inputs.github-client-id }}
+          private-key: ${{ secrets.github-private-key }}
+          repositories: ${{ inputs.github-app-repositories }}
+          permission-actions: write
+
+      - name: Delete old caches except latest
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
+        env:
+          OWNER: ${{ inputs.owner }}
+          REPOSITORY: ${{ inputs.repository }}
+          BRANCH: ${{ inputs.branch }}
+          KEEP_COUNT: ${{ inputs.keep-count }}
+          KEY_FILTER: ${{ inputs.cache-key-filter }}
+        with:
+          github-token: ${{ steps.generate-token.outputs.token }}
+          script: |
+            const branch = process.env.BRANCH;
+            const keepCount = parseInt(process.env.KEEP_COUNT) || 1;
+            const keyFilter = process.env.KEY_FILTER || '';
+            const owner = process.env.OWNER || context.repo.owner;
+            const repo = process.env.REPOSITORY || context.repo.repo;
+
+            const allCaches = await github.paginate('GET /repos/{owner}/{repo}/actions/caches', {
+              owner,
+              repo,
+              per_page: 100,
+            });
+
+            // Filter for target branch and optional key pattern
+            const targetCaches = allCaches
+              .filter(cache =>
+                (cache.ref?.includes(branch) || cache.key?.includes(branch)) &&
+                (!keyFilter || cache.key?.includes(keyFilter))
+              )
+              .sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+
+            console.log(`Found ${targetCaches.length} matching caches for ${branch}${keyFilter ? ` (filtered by: ${keyFilter})` : ''}`);
+
+            if (targetCaches.length > keepCount) {
+              const toDelete = targetCaches.slice(keepCount);
+              for (const cache of toDelete) {
+                await github.request('DELETE /repos/{owner}/{repo}/actions/caches/{cache_id}', {
+                  owner,
+                  repo,
+                  cache_id: cache.id,
+                });
+                console.log(`Deleted cache ${cache.id}: ${cache.key} (${cache.size_in_bytes} bytes)`);
+              }
+              console.log(`Deleted ${toDelete.length} old caches, kept ${keepCount} latest`);
+            } else {
+              console.log(`No old caches to delete (found ${targetCaches.length}, keep ${keepCount})`);
+            }

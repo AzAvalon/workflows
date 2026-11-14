@@ -1,0 +1,79 @@
+name: Sonarcloud Scan
+
+on:
+  workflow_call:
+    inputs:
+      build-version:
+        description: "App tag version"
+        required: false
+        type: string
+      runner:
+        description: "Runner label: ubuntu-26.04 or ubuntu-26.04-arm"
+        required: false
+        type: string
+        default: ubuntu-26.04
+      github-client-id:
+        description: "Client ID of the GitHub App that mints the job token"
+        required: true
+        type: string
+      github-app-repositories:
+        description: "Repository names (same owner) the token covers, comma separated. Empty means the calling repository only; when set, list the calling repository too"
+        required: false
+        type: string
+        default: ""
+    secrets:
+      github-private-key:
+        description: "Private key (PEM) of the GitHub App"
+        required: true
+      sonar-token:
+        required: true
+
+jobs:
+  sonarcloud-scan:
+    runs-on: ${{ inputs.runner }}
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          pattern: reports-${{ github.run_id }}-${{ github.run_attempt }}-*
+          merge-multiple: true
+          path: coverage
+
+      - name: Resolve coverage report paths
+        id: coverage
+        run: |
+          paths=$(find coverage -maxdepth 1 -name 'coverage-*.info' -printf '%p,' | sed 's/,$//')
+          echo "paths=$paths" >> "$GITHUB_OUTPUT"
+
+      - name: Resolve clippy report paths
+        id: clippy
+        run: |
+          paths=$(find coverage -maxdepth 1 -name 'sonar-*.json' -printf '%p,' | sed 's/,$//')
+          echo "paths=$paths" >> "$GITHUB_OUTPUT"
+
+      - name: Generate a token
+        id: generate-token
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3
+        with:
+          client-id: ${{ inputs.github-client-id }}
+          private-key: ${{ secrets.github-private-key }}
+          repositories: ${{ inputs.github-app-repositories }}
+          permission-contents: read
+          permission-pull-requests: write
+
+      - name: SonarCloud Scan
+        uses: SonarSource/sonarqube-scan-action@e805d875275f728fac1885b413934be6d7c63f65 # v8
+        env:
+          GITHUB_TOKEN: ${{ steps.generate-token.outputs.token }}
+          SONAR_TOKEN: ${{ secrets.sonar-token }}
+        with:
+          args: >
+            -Dsonar.projectVersion=${{ inputs.build-version || 'undefined' }}
+            -Dsonar.rust.lcov.reportPaths=${{ steps.coverage.outputs.paths }}
+            -Dsonar.rust.clippy.enabled=false
+            -Dsonar.rust.clippyReport.reportPaths=${{ steps.clippy.outputs.paths }}

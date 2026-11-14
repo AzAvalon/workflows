@@ -132,6 +132,11 @@ jobs:
       contents: read
     env:
       DOCKERHUB_USERNAME: ${{ inputs.dockerhub-username }}
+      # Keep provenance out of the bake metadata output: it embeds the whole
+      # event payload (PR body included) and can exceed the 128 KB limit of
+      # one environment variable in the "Export digests" step. The provenance
+      # attestation pushed with the image is not affected.
+      BUILDX_METADATA_PROVENANCE: disabled
       # Variables read by the bake file.
       BAKE_CONTEXT: ${{ inputs.bake-context }}
       DOCKERFILE: ${{ inputs.dockerfile }}

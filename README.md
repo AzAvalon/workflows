@@ -1,5 +1,10 @@
 # workflows
 
+[![Quality Gate Status](https://sonarcloud.io/api/project_badges/measure?project=AzAvalon_workflows&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=AzAvalon_workflows)
+[![Security Rating](https://sonarcloud.io/api/project_badges/measure?project=AzAvalon_workflows&metric=security_rating)](https://sonarcloud.io/summary/new_code?id=AzAvalon_workflows)
+[![Reliability Rating](https://sonarcloud.io/api/project_badges/measure?project=AzAvalon_workflows&metric=reliability_rating)](https://sonarcloud.io/summary/new_code?id=AzAvalon_workflows)
+[![Maintainability Rating](https://sonarcloud.io/api/project_badges/measure?project=AzAvalon_workflows&metric=sqale_rating)](https://sonarcloud.io/summary/new_code?id=AzAvalon_workflows)
+
 Reusable GitHub Actions workflows. They run only on GitHub-hosted
 runners `ubuntu-26.04` (x64) and `ubuntu-26.04-arm` (arm64). Images and
 Helm charts go to Docker Hub. Nothing uses AWS.

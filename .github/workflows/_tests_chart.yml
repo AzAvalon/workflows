@@ -56,9 +56,16 @@ jobs:
             ARM64) arch=arm64 ;;
             *) echo "Unsupported runner arch ${RUNNER_ARCH}" >&2; exit 1 ;;
           esac
-          url="https://github.com/yannh/kubeconform/releases/download/${VERSION}/kubeconform-linux-${arch}.tar.gz"
-          mkdir -p "${RUNNER_TEMP}/bin"
-          curl -fsSL "$url" | tar -xz -C "${RUNNER_TEMP}/bin" kubeconform
+          # The archive is checked against the CHECKSUMS file of the same
+          # release before anything is extracted.
+          base="https://github.com/yannh/kubeconform/releases/download/${VERSION}"
+          file="kubeconform-linux-${arch}.tar.gz"
+          dl="${RUNNER_TEMP}/kubeconform-dl"
+          mkdir -p "$dl" "${RUNNER_TEMP}/bin"
+          curl -fsSL --proto '=https' --tlsv1.2 -o "${dl}/${file}" "${base}/${file}"
+          curl -fsSL --proto '=https' --tlsv1.2 -o "${dl}/CHECKSUMS" "${base}/CHECKSUMS"
+          (cd "$dl" && grep " ${file}\$" CHECKSUMS | sha256sum -c -)
+          tar -xzf "${dl}/${file}" -C "${RUNNER_TEMP}/bin" kubeconform
           echo "${RUNNER_TEMP}/bin" >> "$GITHUB_PATH"
 
       - name: Login Helm to Docker Hub

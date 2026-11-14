@@ -3,10 +3,14 @@ name: Checks
 on:
   workflow_dispatch:
   pull_request:
+  push:
+    branches:
+      - develop
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # PRs keep only the latest run; every develop push runs to the end
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
@@ -76,8 +80,9 @@ jobs:
       contents: read
     with:
       service-name: dummy-service
-      docker-tag: ${{ format('pr-{0}.{1}', github.event.pull_request.number, github.event.pull_request.head.sha) }}
-      docker-push: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository }}
+      docker-tag: ${{ github.event_name == 'pull_request' && format('pr-{0}.{1}', github.event.pull_request.number, github.event.pull_request.head.sha) || format('{0}.{1}', github.ref_name, github.sha) }}
+      # fork PRs get no secrets, so they build without pushing
+      docker-push: ${{ (github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)) }}
       github-client-id: ${{ vars.CI_APP_CLIENT_ID }}
       dockerhub-username: ${{ vars.DOCKERHUB_USERNAME }}
     secrets:
@@ -85,13 +90,13 @@ jobs:
       dockerhub-token: ${{ secrets.DOCKERHUB_TOKEN }}
 
   publish-chart:
-    if: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository }}
+    if: ${{ (github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)) }}
     uses: ./.github/workflows/_publish_chart.yml
     permissions:
       contents: read
     with:
       service-name: dummy-service
-      chart-version: ${{ format('0.0.0-pr.{0}.{1}', github.event.pull_request.number, github.event.pull_request.head.sha) }}
+      chart-version: ${{ github.event_name == 'pull_request' && format('0.0.0-pr.{0}.{1}', github.event.pull_request.number, github.event.pull_request.head.sha) || format('0.0.0-{0}.{1}', github.ref_name, github.sha) }}
       dockerhub-username: ${{ vars.DOCKERHUB_USERNAME }}
     secrets:
       dockerhub-token: ${{ secrets.DOCKERHUB_TOKEN }}
@@ -119,7 +124,7 @@ jobs:
       contents: read
     with:
       runner: ${{ matrix.runner }}
-      docker-tag: ${{ format('pr-{0}.{1}', github.event.pull_request.number, github.event.pull_request.head.sha) }}
+      docker-tag: ${{ github.event_name == 'pull_request' && format('pr-{0}.{1}', github.event.pull_request.number, github.event.pull_request.head.sha) || format('{0}.{1}', github.ref_name, github.sha) }}
 
   release:
     uses: ./.github/workflows/_release.yml

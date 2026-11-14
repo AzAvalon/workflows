@@ -45,7 +45,7 @@ jobs:
       runner: ${{ matrix.runner }}
       test-id: workflows-${{ matrix.runner }}
       # renovate: datasource=docker depName=docker.io/library/postgres
-      use-postgres-image: docker.io/library/postgres:18-alpine
+      use-postgres-image: mirror.gcr.io/library/postgres:18-alpine
       opt-cache-path: .cache
       opt-cache-key: workflows-smoke-${{ matrix.runner }}-${{ github.sha }}
       extra-upload: extra

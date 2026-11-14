@@ -172,9 +172,17 @@ jobs:
           username: ${{ inputs.dockerhub-username }}
           password: ${{ secrets.dockerhub-token }}
 
+      # Docker Hub images are pulled through mirror.gcr.io, which does not
+      # count against the Docker Hub pull quota. BuildKit falls back to
+      # docker.io for images the mirror lacks; pushes still go to docker.io.
       - name: Set up Docker Buildx
         id: setup-buildx
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
+        with:
+          driver-opts: image=mirror.gcr.io/moby/buildkit:buildx-stable-1
+          buildkitd-config-inline: |
+            [registry."docker.io"]
+              mirrors = ["mirror.gcr.io"]
 
       # Resolves the targets and their tags from the bake file, and writes the
       # per-target overrides: platform, push by digest under the bare
@@ -288,6 +296,8 @@ jobs:
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
+        with:
+          driver-opts: image=mirror.gcr.io/moby/buildkit:buildx-stable-1
 
       # One multi-platform manifest per bake target, tagged as in the bake file.
       - name: Create manifest lists and push tags

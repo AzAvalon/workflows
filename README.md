@@ -36,6 +36,10 @@ bake target by digest, without tags. A final job joins the digests of
 each target into one multi-platform image, pushes the tags written in
 the bake file, and signs it with cosign. Build layers are cached in the
 GitHub Actions cache, one scope per Dockerfile, target and platform.
+Docker Hub images (base images, the BuildKit image) are pulled through
+`mirror.gcr.io`, so builds don't use the Docker Hub pull quota; pushes
+still go to Docker Hub. Use `mirror.gcr.io/library/...` for the service
+containers of `_tests_app.yml` too.
 
 The bake file decides the tags. The workflow exposes these variables to
 it: `DOCKER_IMAGE` (`<docker-registry>/<service-name>`, registry default

@@ -32,11 +32,11 @@ on:
         required: false
         type: string
       use-redis-image:
-        default: "" # docker.io/library/redis:8
+        default: "" # mirror.gcr.io/library/redis:8
         required: false
         type: string
       use-mongo-image:
-        default: "" # docker.io/library/mongo:8
+        default: "" # mirror.gcr.io/library/mongo:8
         required: false
         type: string
       use-keycloak-image:
@@ -44,11 +44,11 @@ on:
         required: false
         type: string
       use-rabbitmq-image:
-        default: "" # docker.io/library/rabbitmq:4
+        default: "" # mirror.gcr.io/library/rabbitmq:4
         required: false
         type: string
       use-postgres-image:
-        default: "" # docker.io/library/postgres:18-alpine
+        default: "" # mirror.gcr.io/library/postgres:18-alpine
         required: false
         type: string
       pull-lfs:

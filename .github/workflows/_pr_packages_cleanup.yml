@@ -1,0 +1,86 @@
+name: PR Packages Cleanup
+
+# Deletes the images and charts a pull request pushed to the GitHub Container
+# Registry: image tags pr-<number>.* and chart versions 0.0.0-pr.<number>.*.
+# Call it on pull_request closed (merged or not). Multi-platform images go
+# with their platform images and cosign signatures. A second pass deletes
+# untagged images left behind, for example platform images two deleted
+# images shared, once they are older than untagged-older-than.
+#
+# Runs with the job's GITHUB_TOKEN (the caller grants packages: write). The
+# calling repository needs admin access to each package, which it gets when
+# its workflows pushed the package first.
+
+on:
+  workflow_call:
+    inputs:
+      packages:
+        description: "GHCR packages to clean, comma separated, for example my-service,charts/my-service"
+        required: true
+        type: string
+      pr-number:
+        description: "Pull request number. Empty means the pull request of the triggering event"
+        required: false
+        type: string
+        default: ""
+      owner:
+        description: "Owner of the packages. Empty means the repository owner"
+        required: false
+        type: string
+        default: ""
+      untagged-older-than:
+        description: "Age after which untagged images are deleted. Keeps the platform images of builds still running, which stay untagged until their merge job tags them"
+        required: false
+        type: string
+        default: "2 hours"
+      dry-run:
+        description: "Only log what would be deleted"
+        required: false
+        type: boolean
+        default: false
+      runner:
+        description: "Runner label: ubuntu-26.04 or ubuntu-26.04-arm"
+        required: false
+        type: string
+        default: ubuntu-26.04
+
+permissions:
+  contents: read
+
+jobs:
+  cleanup:
+    name: Delete PR packages
+    runs-on: ${{ inputs.runner }}
+    permissions:
+      packages: write # delete package versions
+    steps:
+      - name: Resolve tags
+        id: tags
+        env:
+          PR_NUMBER: ${{ inputs.pr-number || github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          if ! [[ "${PR_NUMBER}" =~ ^[0-9]+$ ]]; then
+            echo "No pull request number (got '${PR_NUMBER}')" >&2
+            exit 1
+          fi
+          # The dot after the number keeps pr-1 from matching pr-12.
+          echo "delete=pr-${PR_NUMBER}.*,0.0.0-pr.${PR_NUMBER}.*" >> "$GITHUB_OUTPUT"
+          echo "Tags to delete: pr-${PR_NUMBER}.*, 0.0.0-pr.${PR_NUMBER}.*"
+
+      - name: Delete images and charts
+        uses: dataaxiom/ghcr-cleanup-action@d52806a0dc70b430571a37da1fde39733ffd640f # v1.2.2
+        with:
+          owner: ${{ inputs.owner || github.repository_owner }}
+          packages: ${{ inputs.packages }}
+          delete-tags: ${{ steps.tags.outputs.delete }}
+          dry-run: ${{ inputs.dry-run }}
+
+      - name: Delete untagged leftovers
+        uses: dataaxiom/ghcr-cleanup-action@d52806a0dc70b430571a37da1fde39733ffd640f # v1.2.2
+        with:
+          owner: ${{ inputs.owner || github.repository_owner }}
+          packages: ${{ inputs.packages }}
+          delete-untagged: true
+          older-than: ${{ inputs.untagged-older-than }}
+          dry-run: ${{ inputs.dry-run }}

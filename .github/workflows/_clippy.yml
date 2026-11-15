@@ -61,13 +61,13 @@ jobs:
         run: git config --global url."https://x-access-token:${TOKEN}@github.com".insteadOf https://github.com
 
       - name: Install latest stable
-        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
         with:
           toolchain: stable
           components: clippy
 
       - name: Install latest nightly
-        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
         with:
           toolchain: nightly
           components: rustfmt

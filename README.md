@@ -90,7 +90,11 @@ signatures. A second pass deletes untagged images older than two hours
 (`untagged-older-than`), such as platform images two deleted images
 shared; younger ones may belong to a build still running. The calling
 repository needs admin access to the packages,
-which it has when its own workflows pushed them first.
+which it has when its own workflows pushed them first. A package that holds
+nothing but the PR's versions is deleted whole, since GitHub refuses to
+delete the last version of a package. To retry a failed cleanup, run the
+caller by hand with the PR number (`workflow_dispatch`, as
+`pr-cleanup.yml` here does).
 
 ```yaml
 on:

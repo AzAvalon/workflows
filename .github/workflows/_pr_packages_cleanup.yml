@@ -7,6 +7,12 @@ name: PR Packages Cleanup
 # untagged images left behind, for example platform images two deleted
 # images shared, once they are older than untagged-older-than.
 #
+# GitHub refuses to delete the last version of a package, so a package that
+# holds nothing but this PR's tags (and their sha256-* cosign tags) and
+# untagged images older than untagged-older-than is deleted whole instead.
+# A recent untagged image may belong to a build still running, so it keeps
+# the package. Packages that do not exist are skipped.
+#
 # Runs with the job's GITHUB_TOKEN (the caller grants packages: write). The
 # calling repository needs admin access to each package, which it gets when
 # its workflows pushed the package first.
@@ -54,10 +60,15 @@ jobs:
     permissions:
       packages: write # delete package versions
     steps:
-      - name: Resolve tags
-        id: tags
+      - name: Plan
+        id: plan
         env:
+          GH_TOKEN: ${{ github.token }}
+          OWNER: ${{ inputs.owner || github.repository_owner }}
+          PACKAGES: ${{ inputs.packages }}
           PR_NUMBER: ${{ inputs.pr-number || github.event.pull_request.number }}
+          UNTAGGED_OLDER_THAN: ${{ inputs.untagged-older-than }}
+          DRY_RUN: ${{ inputs.dry-run }}
         run: |
           set -euo pipefail
           if ! [[ "${PR_NUMBER}" =~ ^[0-9]+$ ]]; then
@@ -67,20 +78,64 @@ jobs:
           # The dot after the number keeps pr-1 from matching pr-12.
           echo "delete=pr-${PR_NUMBER}.*,0.0.0-pr.${PR_NUMBER}.*" >> "$GITHUB_OUTPUT"
           echo "Tags to delete: pr-${PR_NUMBER}.*, 0.0.0-pr.${PR_NUMBER}.*"
+          pr_re="^(pr-${PR_NUMBER}[.]|0[.]0[.]0-pr[.]${PR_NUMBER}[.])"
+          own_re="${pr_re}|^sha256-[0-9a-f]{64}([.][a-z]+)?$"
+          cutoff="$(date -u -d "${UNTAGGED_OLDER_THAN} ago" +%Y-%m-%dT%H:%M:%SZ)"
+
+          if [ "$(gh api "users/${OWNER}" --jq .type)" = "Organization" ]; then
+            base="orgs/${OWNER}"
+          else
+            base="users/${OWNER}"
+          fi
+          keep=()
+          IFS=',' read -ra packages <<< "${PACKAGES}"
+          for p in "${packages[@]}"; do
+            p="$(xargs <<< "$p")"
+            [ -n "$p" ] || continue
+            url="${base}/packages/container/${p//\//%2F}"
+            if ! versions="$(gh api --paginate "${url}/versions?per_page=100" \
+                --jq '.[] | {tags: .metadata.container.tags, updated: .updated_at}' 2> "${RUNNER_TEMP}/err")"; then
+              if grep -q '(HTTP 404)' "${RUNNER_TEMP}/err"; then
+                echo "${p}: no such package, skipped"
+                continue
+              fi
+              cat "${RUNNER_TEMP}/err" >&2
+              exit 1
+            fi
+            summary="$(jq -s -c --arg pr "${pr_re}" --arg own "${own_re}" --arg cutoff "${cutoff}" '{
+                pr: [.[].tags[] | select(test($pr))] | length,
+                other: [.[].tags[] | select(test($own) | not)] | length,
+                recent: [.[] | select((.tags | length) == 0 and .updated > $cutoff)] | length
+              }' <<< "${versions}")"
+            echo "${p}: ${summary}"
+            # Nothing but this PR's tags and old untagged images: deleting
+            # version by version would end on the last one, which GitHub refuses.
+            if jq -e '.other == 0 and .recent == 0' <<< "${summary}" > /dev/null; then
+              echo "${p}: holds only PR #${PR_NUMBER} versions and old untagged images, deleting the whole package"
+              if [ "${DRY_RUN}" != "true" ]; then
+                gh api -X DELETE "${url}"
+              fi
+            else
+              keep+=("$p")
+            fi
+          done
+          echo "packages=$(IFS=','; echo "${keep[*]}")" >> "$GITHUB_OUTPUT"
 
       - name: Delete images and charts
+        if: ${{ steps.plan.outputs.packages != '' }}
         uses: dataaxiom/ghcr-cleanup-action@d52806a0dc70b430571a37da1fde39733ffd640f # v1.2.2
         with:
           owner: ${{ inputs.owner || github.repository_owner }}
-          packages: ${{ inputs.packages }}
-          delete-tags: ${{ steps.tags.outputs.delete }}
+          packages: ${{ steps.plan.outputs.packages }}
+          delete-tags: ${{ steps.plan.outputs.delete }}
           dry-run: ${{ inputs.dry-run }}
 
       - name: Delete untagged leftovers
+        if: ${{ steps.plan.outputs.packages != '' }}
         uses: dataaxiom/ghcr-cleanup-action@d52806a0dc70b430571a37da1fde39733ffd640f # v1.2.2
         with:
           owner: ${{ inputs.owner || github.repository_owner }}
-          packages: ${{ inputs.packages }}
+          packages: ${{ steps.plan.outputs.packages }}
           delete-untagged: true
           older-than: ${{ inputs.untagged-older-than }}
           dry-run: ${{ inputs.dry-run }}

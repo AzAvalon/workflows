@@ -1,17 +1,22 @@
 name: Package & Push Helm Chart
 
+# Charts go to the GitHub Container Registry (oci://ghcr.io/<owner>/charts)
+# by default, logged in with the job's GITHUB_TOKEN: the caller grants
+# packages: write.
+
 on:
   workflow_call:
     inputs:
       dockerhub-username:
-        description: "Docker Hub user that pushes the chart"
-        required: true
-        type: string
-      helm-registry:
-        description: "OCI registry and namespace the chart is pushed to"
+        description: "Docker Hub user, to push to Docker Hub or pull private Docker Hub dependencies. Empty skips the login"
         required: false
         type: string
-        default: registry-1.docker.io/hichamaz
+        default: ""
+      helm-registry:
+        description: "OCI registry and namespace the chart is pushed to. Empty means ghcr.io/<owner, lowercase>/charts"
+        required: false
+        type: string
+        default: ""
       service-name:
         description: "Chart name (name field of Chart.yaml)"
         required: true
@@ -36,19 +41,39 @@ on:
         default: ubuntu-26.04
     secrets:
       dockerhub-token:
-        required: true
+        required: false
 
 jobs:
   publish-chart:
     runs-on: ${{ inputs.runner }}
     permissions:
       contents: read
+      packages: write # push to ghcr.io
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
+      # GHCR names must be lowercase, and the owner (AzAvalon) is not.
+      - name: Resolve registry
+        id: registry
+        env:
+          REGISTRY: ${{ inputs.helm-registry }}
+        run: |
+          set -euo pipefail
+          registry="${REGISTRY:-ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/charts}"
+          echo "registry=${registry}" >> "$GITHUB_OUTPUT"
+          echo "host=${registry%%/*}" >> "$GITHUB_OUTPUT"
+          echo "Chart registry: oci://${registry}"
+
       # Helm 4 ships with the ubuntu-26.04 runner images.
+      - name: Login Helm to GitHub Container Registry
+        if: ${{ steps.registry.outputs.host == 'ghcr.io' }}
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: echo "${GITHUB_TOKEN}" | helm registry login --username "${GITHUB_ACTOR}" --password-stdin ghcr.io
+
       - name: Login Helm to Docker Hub
+        if: ${{ inputs.dockerhub-username != '' }}
         env:
           DOCKERHUB_USERNAME: ${{ inputs.dockerhub-username }}
           DOCKERHUB_TOKEN: ${{ secrets.dockerhub-token }}
@@ -64,4 +89,6 @@ jobs:
         run: helm package "${{ inputs.chart-path }}" --version "${{ inputs.chart-version }}"
 
       - name: Publish Package
-        run: helm push "${{ inputs.service-name }}-${{ inputs.chart-version }}.tgz" "oci://${{ inputs.helm-registry }}"
+        env:
+          REGISTRY: ${{ steps.registry.outputs.registry }}
+        run: helm push "${{ inputs.service-name }}-${{ inputs.chart-version }}.tgz" "oci://${REGISTRY}"

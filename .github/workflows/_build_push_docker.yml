@@ -5,12 +5,15 @@ name: Build & Push Docker Image
 # every bake target by digest. A merge job then creates, for each target, the
 # multi-platform tags written in the bake file. Groups with several targets
 # are supported.
+#
+# Images go to the GitHub Container Registry (ghcr.io/<owner>) by default,
+# logged in with the job's GITHUB_TOKEN: the caller grants packages: write.
 
 on:
   workflow_call:
     inputs:
       dockerhub-username:
-        description: "Docker Hub user. Empty skips the login"
+        description: "Docker Hub user, for pushes to docker.io or authenticated pulls. Empty skips the login"
         required: false
         type: string
         default: ""
@@ -49,10 +52,10 @@ on:
         required: true
         type: string
       docker-registry:
-        description: "Registry and namespace prefix of the image"
+        description: "Registry and namespace prefix of the image. Empty means ghcr.io/<owner, lowercase>"
         required: false
         type: string
-        default: docker.io/hichamaz
+        default: ""
       docker-push:
         description: "Whether to push built images"
         required: false
@@ -130,6 +133,7 @@ jobs:
     runs-on: ${{ matrix.runner }}
     permissions:
       contents: read
+      packages: write # push to ghcr.io
     env:
       DOCKERHUB_USERNAME: ${{ inputs.dockerhub-username }}
       # Keep provenance out of the bake metadata output: it embeds the whole
@@ -140,7 +144,6 @@ jobs:
       # Variables read by the bake file.
       BAKE_CONTEXT: ${{ inputs.bake-context }}
       DOCKERFILE: ${{ inputs.dockerfile }}
-      DOCKER_IMAGE: ${{ inputs.docker-registry }}/${{ inputs.service-name }}
       DOCKER_TAG_PRIMARY: ${{ inputs.docker-tag }}
       DOCKER_TAG_EXTRA: ${{ inputs.docker-extra-tag }}
       DOCKER_PLATFORMS: ${{ matrix.platform }}
@@ -164,6 +167,28 @@ jobs:
           repositories: ${{ inputs.github-app-repositories }}
           permission-contents: read
 
+      # DOCKER_IMAGE for the bake file: <registry>/<service-name>. GHCR
+      # names must be lowercase, and the owner (AzAvalon) is not.
+      - name: Resolve registry
+        id: registry
+        env:
+          REGISTRY: ${{ inputs.docker-registry }}
+          SERVICE: ${{ inputs.service-name }}
+        run: |
+          set -euo pipefail
+          registry="${REGISTRY:-ghcr.io/${GITHUB_REPOSITORY_OWNER,,}}"
+          echo "host=${registry%%/*}" >> "$GITHUB_OUTPUT"
+          echo "DOCKER_IMAGE=${registry}/${SERVICE}" >> "$GITHUB_ENV"
+          echo "Image: ${registry}/${SERVICE}"
+
+      - name: Login to GitHub Container Registry
+        if: ${{ steps.registry.outputs.host == 'ghcr.io' }}
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
       # Also logs in for pulls, which lifts the anonymous Docker Hub rate limit.
       - name: Login to Docker Hub
         if: ${{ env.DOCKERHUB_USERNAME != '' }}
@@ -174,7 +199,7 @@ jobs:
 
       # Docker Hub images are pulled through mirror.gcr.io, which does not
       # count against the Docker Hub pull quota. BuildKit falls back to
-      # docker.io for images the mirror lacks; pushes still go to docker.io.
+      # docker.io for images the mirror lacks.
       - name: Set up Docker Buildx
         id: setup-buildx
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
@@ -220,6 +245,8 @@ jobs:
             echo "set<<EOF_SET"
             echo "*.platform=${PLATFORM}"
             echo "*.output=type=image,push-by-digest=true,name-canonical=true,push=${PUSH}"
+            # Links the GHCR package to this repository
+            echo "*.labels.org.opencontainers.image.source=${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}"
             for t in $(jq -r 'keys[]' "${plan}"); do
               echo "${t}.tags=$(jq -r --arg t "$t" '.[$t].repo' "${plan}")"
               if [ "${CACHE}" = "true" ]; then
@@ -277,6 +304,7 @@ jobs:
     permissions:
       id-token: write # cosign keyless signing
       contents: read
+      packages: write # push to ghcr.io
     outputs:
       digests: ${{ steps.manifest.outputs.digests }}
 
@@ -288,7 +316,16 @@ jobs:
           merge-multiple: true
           path: ${{ runner.temp }}/digests
 
+      - name: Login to GitHub Container Registry
+        if: ${{ inputs.docker-registry == '' || startsWith(inputs.docker-registry, 'ghcr.io/') }}
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
       - name: Login to Docker Hub
+        if: ${{ inputs.dockerhub-username != '' }}
         uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4
         with:
           username: ${{ inputs.dockerhub-username }}
@@ -311,6 +348,8 @@ jobs:
             repo="$(jq -r --arg t "$t" '.[$t].repo' "${dir}/plan.json")"
             args=()
             for tag in "${tags[@]}"; do args+=(-t "${tag}"); done
+            # Links the GHCR package of a multi-platform image to this repository
+            args+=(--annotation "index:org.opencontainers.image.source=${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}")
             for f in "${dir}/${t}@"*; do args+=("${repo}@$(cat "$f")"); done
             docker buildx imagetools create "${args[@]}"
             digest="$(docker buildx imagetools inspect "${tags[0]}" --format '{{json .Manifest.Digest}}' | tr -d '"')"

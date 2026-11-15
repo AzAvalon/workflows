@@ -7,7 +7,8 @@
 
 Reusable GitHub Actions workflows. They run only on GitHub-hosted
 runners `ubuntu-26.04` (x64) and `ubuntu-26.04-arm` (arm64). Images and
-Helm charts go to Docker Hub. Nothing uses AWS.
+Helm charts go to the GitHub Container Registry (`ghcr.io`) by default.
+Nothing uses AWS.
 
 The runner images already ship Rust, Docker with Buildx, Helm 4, kind,
 kubectl, yq, jq and Git LFS, so the workflows install very little.
@@ -16,8 +17,8 @@ kubectl, yq, jq and Git LFS, so the workflows install very little.
 
 | Workflow                 | What it does                                                                 |
 | ------------------------ | ---------------------------------------------------------------------------- |
-| `_build_push_docker.yml` | Builds a bake target per platform on a native runner, pushes the tags to Docker Hub, signs with cosign. |
-| `_publish_chart.yml`     | Packages a Helm chart and pushes it to Docker Hub as an OCI artifact.        |
+| `_build_push_docker.yml` | Builds a bake target per platform on a native runner, pushes the tags to GHCR, signs with cosign. |
+| `_publish_chart.yml`     | Packages a Helm chart and pushes it to GHCR as an OCI artifact.              |
 | `_tests_chart.yml`       | `helm lint`, `helm template` and `kubeconform` on a chart.                    |
 | `_integration_tests.yml` | Installs the chart in a kind cluster on the runner and waits until it is ready. |
 | `_tests_app.yml`         | Runs `make` setup/test targets with optional service containers, uploads coverage and JUnit reports. |
@@ -29,6 +30,7 @@ kubectl, yq, jq and Git LFS, so the workflows install very little.
 | `_release.yml`           | Runs semantic-release.                                                        |
 | `_cache_cleanup.yml`     | Deletes old Actions caches of a branch.                                       |
 | `_pr_cache_cleanup.yml`  | Deletes the Actions caches of a closed PR.                                    |
+| `_pr_packages_cleanup.yml` | Deletes the GHCR images and charts of a closed PR.                          |
 
 Every workflow takes a `runner` input (default `ubuntu-26.04`) except
 `_build_push_docker.yml`, which picks the runner from each platform.
@@ -41,14 +43,19 @@ bake target by digest, without tags. A final job joins the digests of
 each target into one multi-platform image, pushes the tags written in
 the bake file, and signs it with cosign. Build layers are cached in the
 GitHub Actions cache, one scope per Dockerfile, target and platform.
-Docker Hub images (base images, the BuildKit image) are pulled through
-`mirror.gcr.io`, so builds don't use the Docker Hub pull quota; pushes
-still go to Docker Hub. Use `mirror.gcr.io/library/...` for the service
-containers of `_tests_app.yml` too.
+Images are pushed to `ghcr.io/<owner>` (lowercase) with the job's
+`GITHUB_TOKEN`, so the caller grants `packages: write`. They carry the
+`org.opencontainers.image.source` label, which links the GHCR package to
+the repository. Docker Hub images (base images, the BuildKit image) are
+pulled through `mirror.gcr.io`, so builds don't use the Docker Hub pull
+quota. Use `mirror.gcr.io/library/...` for the service containers of
+`_tests_app.yml` too. To push to Docker Hub instead, set
+`docker-registry: docker.io/<user>` with `dockerhub-username` and the
+`dockerhub-token` secret.
 
 The bake file decides the tags. The workflow exposes these variables to
 it: `DOCKER_IMAGE` (`<docker-registry>/<service-name>`, registry default
-`docker.io/hichamaz`), `DOCKER_TAG_PRIMARY`, `DOCKER_TAG_EXTRA`,
+`ghcr.io/<owner>`), `DOCKER_TAG_PRIMARY`, `DOCKER_TAG_EXTRA`,
 `DOCKERFILE`, `BAKE_CONTEXT`, and the `git-credentials` build secret
 (the App token). Groups with several targets work; every target needs at
 least one tag.
@@ -60,26 +67,59 @@ jobs:
     permissions:
       id-token: write # cosign
       contents: read
+      packages: write # ghcr.io
     with:
       service-name: my-service
       docker-tag: ${{ github.ref_name }}
       docker-push: true
       github-client-id: ${{ vars.CI_APP_CLIENT_ID }}
-      dockerhub-username: ${{ vars.DOCKERHUB_USERNAME }}
     secrets:
       github-private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}
-      dockerhub-token: ${{ secrets.DOCKERHUB_TOKEN }}
+```
+
+A new GHCR package starts private. Make it public once in its package
+settings if anyone outside the organization pulls it.
+
+## Cleaning up PR packages
+
+Images and charts pushed for a pull request (tags `pr-<N>.*`, chart
+versions `0.0.0-pr.<N>.*`) are deleted when the PR closes, merged or not,
+by calling `_pr_packages_cleanup.yml` on `pull_request: closed`.
+Multi-platform images go with their platform images and cosign
+signatures. A second pass deletes untagged images older than two hours
+(`untagged-older-than`), such as platform images two deleted images
+shared; younger ones may belong to a build still running. The calling
+repository needs admin access to the packages,
+which it has when its own workflows pushed them first.
+
+```yaml
+on:
+  pull_request:
+    types: [closed]
+
+jobs:
+  packages:
+    if: ${{ github.event.pull_request.head.repo.full_name == github.repository }}
+    uses: AzAvalon/workflows/.github/workflows/_pr_packages_cleanup.yml@<sha>
+    permissions:
+      contents: read
+      packages: write
+    with:
+      packages: my-service,charts/my-service
 ```
 
 ## Secrets
 
-- `dockerhub-token` secret with the `dockerhub-username` input: Docker
-  Hub access token (Read & Write) and user. Required to push images and
-  charts; optional elsewhere. The user is an input, not a secret, so it
-  is not masked in logs and image names.
+- No secret is needed for GHCR: the image, chart and cleanup workflows
+  use the job's `GITHUB_TOKEN` with `packages: write`. GitHub Apps cannot
+  write packages, so this is the one write the job token does.
+- `dockerhub-token` secret with the `dockerhub-username` input: optional
+  Docker Hub access token and user, to push to Docker Hub or to pull
+  private Docker Hub images and charts. The user is an input, not a
+  secret, so it is not masked in logs and image names.
 - `github-private-key` with the `github-client-id` input: a GitHub App.
-  Every workflow except the chart ones requires it and never uses
-  `GITHUB_TOKEN` for writes; the job token stays read-only. Each workflow
+  Every workflow except the chart and cleanup ones requires it and never
+  uses `GITHUB_TOKEN` for other writes. Each workflow
   asks the App only for the scopes it needs (for example `contents: read`
   for builds, `contents`/`issues`/`pull-requests: write` for releases).
 - `cargo-registry-token`: crates.io token. Without it,
@@ -113,7 +153,8 @@ matters. `develop` only moves by fast-forward to a tested PR head, so pushes
 to it do not run the checks again. `tests.yml` and `release.yml` need:
 
 - variable `CI_APP_CLIENT_ID` and secret `CI_APP_PRIVATE_KEY` (the App),
-- variable `DOCKERHUB_USERNAME` and secret `DOCKERHUB_TOKEN` (push the
-  dummy image and chart; only `tests.yml`).
+  set once at organization level in AzAvalon.
 
-In AzAvalon they are all set once at organization level.
+The dummy image and chart go to `ghcr.io/azavalon/dummy-service` and
+`ghcr.io/azavalon/charts/dummy-service`; `pr-cleanup.yml` deletes a PR's
+versions when it closes.

@@ -1,7 +1,8 @@
 name: Integration Tests
 
 # Installs the chart in a throwaway kind cluster on the runner and waits for
-# it to become ready. Images are pulled from Docker Hub.
+# it to become ready. Images are pulled from the registries the chart names;
+# public GHCR images need no pull secret.
 
 on:
   workflow_call:

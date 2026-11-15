@@ -74,28 +74,25 @@ jobs:
     permissions:
       id-token: write
       contents: read
+      packages: write
     with:
       service-name: dummy-service
       docker-tag: ${{ github.event_name == 'pull_request' && format('pr-{0}.{1}', github.event.pull_request.number, github.event.pull_request.head.sha) || format('{0}.{1}', github.ref_name, github.sha) }}
       # fork PRs and manual runs build without pushing
       docker-push: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository }}
       github-client-id: ${{ vars.CI_APP_CLIENT_ID }}
-      dockerhub-username: ${{ vars.DOCKERHUB_USERNAME }}
     secrets:
       github-private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}
-      dockerhub-token: ${{ secrets.DOCKERHUB_TOKEN }}
 
   publish-chart:
     if: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository }}
     uses: ./.github/workflows/_publish_chart.yml
     permissions:
       contents: read
+      packages: write
     with:
       service-name: dummy-service
       chart-version: ${{ github.event_name == 'pull_request' && format('0.0.0-pr.{0}.{1}', github.event.pull_request.number, github.event.pull_request.head.sha) || format('0.0.0-{0}.{1}', github.ref_name, github.sha) }}
-      dockerhub-username: ${{ vars.DOCKERHUB_USERNAME }}
-    secrets:
-      dockerhub-token: ${{ secrets.DOCKERHUB_TOKEN }}
 
   publish-cargo:
     uses: ./.github/workflows/_publish_cargo.yml
@@ -121,6 +118,20 @@ jobs:
     with:
       runner: ${{ matrix.runner }}
       docker-tag: ${{ github.event_name == 'pull_request' && format('pr-{0}.{1}', github.event.pull_request.number, github.event.pull_request.head.sha) || format('{0}.{1}', github.ref_name, github.sha) }}
+
+  # Lists what pr-cleanup.yml will delete when this PR closes.
+  packages-cleanup:
+    needs:
+      - integration-tests
+      - publish-chart
+    if: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository }}
+    uses: ./.github/workflows/_pr_packages_cleanup.yml
+    permissions:
+      contents: read
+      packages: write
+    with:
+      packages: dummy-service,charts/dummy-service
+      dry-run: true
 
   release:
     uses: ./.github/workflows/_release.yml

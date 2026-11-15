@@ -1,0 +1,22 @@
+name: PR Cleanup
+
+# Deletes the images and charts a pull request pushed to GHCR once it is
+# closed, merged or not. Fork PRs never push, so they are skipped.
+
+on:
+  pull_request:
+    types:
+      - closed
+
+permissions:
+  contents: read
+
+jobs:
+  packages:
+    if: ${{ github.event.pull_request.head.repo.full_name == github.repository }}
+    uses: ./.github/workflows/_pr_packages_cleanup.yml
+    permissions:
+      contents: read
+      packages: write
+    with:
+      packages: dummy-service,charts/dummy-service

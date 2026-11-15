@@ -7,7 +7,7 @@ variable "DOCKERFILE" {
 }
 
 variable "DOCKER_IMAGE" {
-  default = "docker.io/hichamaz/dummy-service"
+  default = "ghcr.io/azavalon/dummy-service"
 }
 
 variable "DOCKER_TAG_PRIMARY" {

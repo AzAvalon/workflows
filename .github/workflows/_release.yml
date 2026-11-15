@@ -82,6 +82,10 @@ jobs:
       # Cargo.lock. cargo-edit ships no release binaries; binstall takes the
       # signed QuickInstall build, and fails rather than compile if none exists.
       - name: Install cargo-set-version
+        env:
+          # Anonymous GitHub API calls share the runner IP's 60/h limit and
+          # get 403 when it runs out; the App token lifts that.
+          GITHUB_TOKEN: ${{ steps.generate-token.outputs.token }}
         run: |
           # renovate: datasource=crate depName=cargo-edit
           VERSION="0.13.14"

@@ -70,12 +70,12 @@ jobs:
           targets: semantic-release-cargo/semantic-release-cargo@v2.4.84
 
       - name: Install cargo-binstall
-        uses: cargo-bins/cargo-binstall@5885714d0a40a14b2535c6ffc051fd8e49aa9665 # v1.27.0
+        uses: cargo-bins/cargo-binstall@4b6fa09d0d1ef9740a0c332e31b9ae336f97efa0 # v1.28.0
         with:
           # Without it the action installs the latest release; Renovate bumps it
           # together with the action (group cargo-binstall).
           # renovate: datasource=github-releases depName=cargo-bins/cargo-binstall extractVersion=^v(?<version>.+)$
-          version: 1.27.0
+          version: 1.28.0
 
       # `cargo set-version --workspace <v>` for edit-version.sh: bumps the
       # workspace version, the version our own crates pin each other at, and
